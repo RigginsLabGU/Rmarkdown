@@ -1,0 +1,429 @@
+---
+title: "TCGA_for paper"
+author: "Aileen"
+date: "8/3/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+---
+title: "BRCA_TCGA_5.7.19"
+author: "Aileen"
+date: "5/7/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, install bioconductor}
+install.packages("BiocManager")
+BiocManager::install(c('Biobase','limma','hgu95av2.db','Biostrings', 'TCGAbiolinks'))
+
+library(TCGAretriever)
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(Biobase)
+library(limma)
+library(stringr)
+library(SummarizedExperiment)
+library(ggfortify)
+library(reshape)
+library(survival)
+library(survminer)
+
+BiocManager::install('GDCquery')
+```
+
+```{r load TCGA, eval =FALSE}
+query <- GDCquery(project = "TCGA-BRCA", 
+                  data.category = "Gene expression",
+                  data.type = "Isoform expression quantification",
+                  experimental.strategy = "RNA-Seq",
+                  platform = "Illumina HiSeq",
+                  file.type = "results",
+                  legacy = TRUE)
+
+GDCdownload(query = query, directory = 'BRCA', method = 'api')
+brca <- GDCprepare(query = query, directory = 'BRCA')
+```
+
+# Load from object on disk
+```{r load-from-disk}
+load('brca.Rdata')
+brca<-brca[!duplicated(row.names(assay(brca))),]
+```
+
+# clinical data in BRCA object
+```{r view-clinical}
+colData(brca) %>% colnames
+```
+
+```{r, ESRRB by pam50}
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df_blbc = data.frame(Pam50 = colData(brca)$subtype_PAM50.mRNA,
+                 ESRRB = assay(brca)[1505,])
+
+my_comparisons <- list( c("Basal-like", "Luminal A"))
+#Plot by ESRRB by PAM50 subtype WITH STATS
+blbc_esrrbexpSTATS  <- ggplot(remove_missing(df_blbc, na.rm = TRUE, vars = ),  aes(x = Pam50, y = ESRRB, color = Pam50, scale = "width" ))+
+  geom_violin(position =position_dodge(1000), trim = FALSE, na.rm = TRUE)+
+  geom_boxplot(width=.1)+
+  coord_flip()+
+   ylab('FPKM')+
+xlab('Pam50 subtype')+
+theme(legend.position="none")+
+labs(title=('ESRRB mRNA'), subtitle=('TCGA by Pam50 subtype'))+
+theme(plot.title = element_text(hjust = 0.5))+
+theme(plot.subtitle = element_text(hjust = 0.5))+
+  stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="pointrange", color="red")+
+  stat_compare_means(method = "anova", label.y = 20000, label.x = 0.6)+
+  stat_compare_means(comparisons = my_comparisons, label.y = c(30000, 3.2))
+
+#shapiro-wilk normality- is the data normally distributed?
+shapiro.test(rnorm(esrrb_pam50))
+# W = 0.92787, p-value = 0.4613
+
+my_data <- ESRRB_ %>%
+  select(value, Pam50)
+
+res.aov2 <- aov(my_data$value ~ my_data$Pam50, data = my_data)
+summary(res.aov2)
+
+require("dplyr")
+group_by(my_data, Pam50) %>%
+  summarise(
+    count = n(),
+    mean = mean(my_data$ESRRB, na.rm = TRUE),
+    sd = sd(my_data$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2, type="means", se = FALSE)
+TukeyHSD(res.aov2)
+
+```
+
+```{r, ER,HER2, TNBC and ESRRB}
+
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df3 = data.frame(HER2 = colData(brca)$subtype_HER2.Final.Status,
+                 PR = colData(brca)$subtype_PR.Status,
+                 ER = colData(brca)$subtype_ER.Status,
+                 ESRRB = assay(brca)[1505,])
+df = filter(df3, PR %in% c('Positive', 'Negative') & ER %in% c('Positive', 'Negative') & HER2 %in% c('Positive', 'Negative'))
+
+df$Pheno = ifelse(df$ER  == 'Positive' & df$HER2 == 'Negative', 'ER+',
+                  ifelse(df$HER2 == 'Positive' & df$ER  == 'Negative', 'HER2+',
+                         ifelse(df$HER2 == 'Negative' & df$ER == 'Negative' & df$PR == 'Negative', 'TNBC', NA)))
+
+#Plot by ESRRB by IHC subtype
+  esrrb_tnbc2 <- ggplot(data=subset(df, !is.na(Pheno)), aes(x = Pheno, y = ESRRB, fill = Pheno))+
+  geom_violin(position =position_dodge(1000), trim = FALSE, na.rm = TRUE)+
+   coord_flip()+
+     geom_boxplot(width=.1)+
+  ylab('FPKM')+
+xlab('IHC subtype')+
+theme(legend.position="none")+
+  scale_colour_discrete(na.translate = F)+
+labs(title=('ESRRB mRNA'), subtitle=('TCGA by IHC subtype'))+
+theme(plot.title = element_text(hjust = 0.5))+
+theme(plot.subtitle = element_text(hjust = 0.5))+
+  stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="pointrange", color="red")
+
+my_comparisons <- list( c("TNBC", "ER+"))
+
+  esrrb_tnbc2STATS <- ggplot(data=subset(df, !is.na(Pheno)), aes(x = Pheno, y = ESRRB, fill = Pheno))+
+  geom_violin(position =position_dodge(1000), trim = FALSE, na.rm = TRUE)+
+   coord_flip()+
+     geom_boxplot(width=.1)+
+  ylab('FPKM')+
+xlab('IHC subtype')+
+theme(legend.position="none")+
+  scale_colour_discrete(na.translate = F)+
+labs(title=('ESRRB mRNA'), subtitle=('TCGA by IHC subtype'))+
+theme(plot.title = element_text(hjust = 0.5))+
+theme(plot.subtitle = element_text(hjust = 0.5))+
+  stat_summary(fun.data=mean_sdl, fun.args = list(mult=1), geom="pointrange", color="red")+
+     stat_compare_means(method = "anova", label.y = 20000, label.x = 0.6)+
+   stat_compare_means(comparisons = my_comparisons, label.y = c(54000, 3.2))
+#shapiro-wilk normality- is the data normally distributed?
+shapiro.test(rnorm(esrrb_tnbc))
+# W = 0.93365, p-value = 0.5168
+
+my_data <- df %>%
+  select(ESRRB, Pheno)
+
+res.aov2 <- aov(my_data$ESRRB ~ my_data$Pheno, data = my_data)
+summary(res.aov2)
+
+require("dplyr")
+group_by(my_data, Pheno) %>%
+  summarise(
+    count = n(),
+    mean = mean(my_data$ESRRB, na.rm = TRUE),
+    sd = sd(my_data$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2, type="means", se = FALSE)
+TukeyHSD(res.aov2)
+```
+
+```{r ESRRB-volcano1-BLBC}
+n<-grep('ESRRB', row.names(assay(brca)))
+df = data.frame(Pam50 = colData(brca)$subtype_PAM50.mRNA,
+                 ESRRB = assay(brca)[n,]
+                 )
+
+df$Sample<-row.names(df3)
+df <- filter(df, Pam50 %in% c('Basal-like'))
+
+ESRRB_Level<-cut(df$ESRRB, breaks = c(-1, quantile(df$ESRRB, 0.25), quantile(df$ESRRB, 0.75), quantile(df$ESRRB, 1)), labels = c('Low', 'Medium', 'High'))
+
+design<-model.matrix(~0+ESRRB_Level)
+
+colnames(design)<-c('Low', 'Medium', 'High')
+
+lm<-lmFit(assay(brca)[,df$Sample] %>% log2, design = design)
+contr<-makeContrasts(High-Low, levels = design)
+lm<-contrasts.fit(lm, contr)
+tab<-eBayes(lm) %>% topTable(number = Inf, sort.by = 'none')
+tab<-tab[-grep('ESRRB', row.names(tab)),]
+tab$Gene<-row.names(tab) %>% {str_match(., pattern = "(^[:alnum:]+)|")[,2]}
+tab$threshold <- "1"
+a <- subset(tab, P.Value < 0.01 & logFC > 4)
+tab[rownames(a), "threshold"] <- "2"
+b <- subset(tab, P.Value < 0.01 & logFC < -4)
+tab[rownames(b), "threshold"] <- "3"
+table(tab$threshold)
+
+blbc <- ggplot(tab, aes(x = logFC, y = -log10(P.Value), colour = threshold))+
+  geom_point()+
+   scale_color_manual(values = c("black", "darkorchid4", "violetred"), 
+                     labels = c("", "Upregulated", "Downregulated"), 
+                     name = "DEGs")+
+  theme_bw()+
+  labs(x=expression(paste(log[2], "FC, ESRRB Hi/Low")), y= expression('-log10(P.Value)'))+
+  ggtitle( 'TCGA-BRCA, Differentially expressed genes (DEGs) in BLBC', subtitle = 'ESRRB Gene Expression, Hi/Low')+
+  geom_label_repel(data = filter(tab, -log10(P.Value) > 2 , abs(logFC) > 4), aes(label = Gene), remove.duplicates = TRUE)+
+  geom_hline(yintercept =2, size = 0.5, colour = "#FF3721",
+               linetype = "dashed")+
+  geom_vline(xintercept = c(-4,4), colour = "#0000FF",
+               linetype = "dashed")
+```
+
+```{r ESRRB-volcano1-TNBC}
+n<-grep('ESRRB', row.names(assay(brca)))
+df3 = data.frame(HER2 = colData(brca)$subtype_HER2.Final.Status,
+                 PR = colData(brca)$subtype_PR.Status,
+                 ER = colData(brca)$subtype_ER.Status,
+                 ESRRB = assay(brca)[n,])
+
+df3$Sample<-row.names(df3)
+df = filter(df3, PR %in% c('Positive', 'Negative') & ER %in% c('Positive', 'Negative') & HER2 %in% c('Positive', 'Negative'))
+df$Pheno = ifelse(df$ER  == 'Positive' & df$HER2 == 'Negative', 'ER+',
+                  ifelse(df$HER2 == 'Positive' & df$ER  == 'Negative', 'HER2+',
+                         ifelse(df$HER2 == 'Negative' & df$ER == 'Negative' & df$PR == 'Negative', 'TNBC', NA)))
+
+df<-filter(df, Pheno=='TNBC')
+df
+ESRRB_Level<-cut(df$ESRRB, breaks = c(-1, quantile(df$ESRRB, 0.25), quantile(df$ESRRB, 0.75), quantile(df$ESRRB, 1)), labels = c('Low', 'Medium', 'High'))
+
+design<-model.matrix(~0+ESRRB_Level)
+
+colnames(design)<-c('Low', 'Medium', 'High')
+
+lm<-lmFit(assay(brca)[,df$Sample] %>% log2, design = design)
+contr<-makeContrasts(High-Low, levels = design)
+lm<-contrasts.fit(lm, contr)
+tab<-eBayes(lm) %>% topTable(number = Inf, sort.by = 'none')
+tab<-tab[-grep('ESRRB', row.names(tab)),]
+tab$Gene<-row.names(tab) %>% {str_match(., pattern = "(^[:alnum:]+)|")[,2]}
+tab$threshold <- "1"
+a <- subset(tab, P.Value < 0.01 & logFC > 4)
+tab[rownames(a), "threshold"] <- "2"
+b <- subset(tab, P.Value < 0.01 & logFC < -4)
+tab[rownames(b), "threshold"] <- "3"
+table(tab$threshold)
+
+tnbc <- ggplot(tab, aes(x = logFC, y = -log10(P.Value), colour = threshold))+
+  geom_point()+
+   scale_color_manual(values = c("black", "darkorchid4", "violetred"), 
+                     labels = c("", "Upregulated", "Downregulated"), 
+                     name = "DEGs")+
+  theme_bw()+
+  labs(x=expression(paste(log[2], "FC, ESRRB Hi/Low")), y= expression('-log10(P.Value)'))+
+  ggtitle( 'TCGA-BRCA, Differentially expressed genes (DEGs) in TNBC', subtitle = 'ESRRB Gene Expression, Hi/Low')+
+  geom_label_repel(data = filter(tab, -log10(P.Value) > 2 , abs(logFC) > 4), aes(label = Gene), remove.duplicates = TRUE)+
+   geom_hline(yintercept =2, size = 0.5, colour = "#FF3721",
+               linetype = "dashed")+
+  geom_vline(xintercept = c(-4,4), colour = "#0000FF",
+               linetype = "dashed")
+```
+
+```{r km plot}
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df3 = data.frame(OS_event = colData(brca)$subtype_OS.event,
+                 OS_days = colData(brca)$subtype_OS.Time,
+                 HER2 = colData(brca)$subtype_HER2.Final.Status,
+                 PR = colData(brca)$subtype_PR.Status,
+                 ER = colData(brca)$subtype_ER.Status,
+                 ESRRB = assay(brca)[1505,])
+df = filter(df3, PR %in% c('Positive', 'Negative') & ER %in% c('Positive', 'Negative') & HER2 %in% c('Positive', 'Negative'))
+
+df$Pheno = ifelse(df$ER  == 'Positive' & df$HER2 == 'Negative', 'ER+',
+                  ifelse(df$HER2 == 'Positive' & df$ER  == 'Negative', 'HER2+',
+                         ifelse(df$HER2 == 'Negative' & df$ER == 'Negative' & df$PR == 'Negative', 'TNBC', NA)))
+
+df_km1 <- df %>%
+  select(ESRRB, Pheno, OS_event, OS_days)
+
+#Where is TCGA cutting ESRRB?
+cut(df_km1$ESRRB, quantile(df_km1$ESRRB,  (0:3)/3), include.lowest = TRUE)
+
+###ONLY HI AND LOW ESRRB_ all BC
+design_km5 <-  mutate(df_km1, ESRRB = cut(df_km1$ESRRB, breaks=c(3.64e+03, 1.36e+03 , -Inf), labels=c("high", "low")))
+design_km5.2 <- design_km5[!is.na(design_km5$ESRRB),]
+
+#compile data to be read by survfit
+surv_object5 <- Surv(time = design_km5.2$OS_days, event = design_km5.2$OS_event)
+
+#fit the KM curves
+fit5 <- survfit(surv_object5 ~ design_km5.2$ESRRB, data = design_km5.2 )
+
+fit5_plot2 <- ggsurvplot(fit5, data = design_km5.2, xlab = "Time (days)", legend.labs = c("High", "Low"), legend = ("bottom"), pval = TRUE,
+   submain = "All Breast Cancer, OS ",
+   caption = "Data from TCGA",
+   
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+
+#In TNBC
+
+df_km1 <- df %>%
+  select(ESRRB, Pheno, OS_event, OS_days)
+
+df_tnbc <- filter(df_km1, Pheno %in% c('TNBC'))
+
+#cut based on  ESRRB levels
+design_km8 <-  mutate(df_tnbc, ESRRB = cut(df_tnbc$ESRRB, quantile(df_tnbc$ESRRB,  (0:3)/3), include.lowest = TRUE, labels=c("High", "Mid", "Low")))
+
+design_km8 <- design_km8[!is.na(design_km8$ESRRB),]
+design_km8 <- filter(design_km8, ESRRB %in% c('High', 'Low'))
+                       
+#compile data to be read by survfit
+surv_object8<- Surv(time = design_km8$OS_days, event = design_km8$OS_event)
+
+#fit the KM curves
+fit8 <- survfit(surv_object8 ~ design_km8$ESRRB, data = design_km8 ) 
+
+fit8_plot2 <- ggsurvplot(fit8, data = design_km8, xlab = "Time (days)", legend = ("bottom"), pval = TRUE,
+   submain = "Triple Negative Breast Cancer, OS ",
+   caption = "Data from TCGA",
+   
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+
+### in BASAL 
+#First, make a table containing Pam50 and other things you want (esrrb, OSevent, OS time)
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df_pam50_OS = data.frame(Pam50 = colData(brca)$subtype_PAM50.mRNA,
+                OS_event = colData(brca)$subtype_OS.event,
+                 OS_days = colData(brca)$subtype_OS.Time,
+                 ESRRB = assay(brca)[n,]
+                 )
+#filter df_96058, only Basal
+df_basal <- filter(df_pam50_OS, Pam50 %in% c('Basal-like'))
+
+#cut based on  ESRRB levels
+design_km7 <-  mutate(df_basal, ESRRB = cut(df_basal$ESRRB, quantile(df_basal$ESRRB,  (0:3)/3), include.lowest = TRUE, labels=c("High", "Mid", "Low")))
+
+design_km7 <- design_km7[!is.na(design_km7$ESRRB),]
+design_km7 <- filter(design_km7, ESRRB %in% c('High', 'Low'))
+                       
+#compile data to be read by survfit
+surv_object7 <- Surv(time = design_km7$OS_days, event = design_km7$OS_event)
+
+#fit the KM curves
+fit7 <- survfit(surv_object7 ~ design_km7$ESRRB, data = design_km7 ) 
+
+fit7_plot2 <- ggsurvplot(fit7, data = design_km7, xlab = "Time (days)",  legend = ("bottom"), pval = TRUE,
+   submain = "Basal Like Breast Cancer, OS ",
+   caption = "Data from TCGA",
+   
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+```
+
+```{r age}
+#all BC
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df_v = data.frame(Pam50 = colData(brca)$subtype_PAM50.mRNA,
+                 HER2 = colData(brca)$subtype_HER2.Final.Status,
+                 PR = colData(brca)$subtype_PR.Status,
+                 ER = colData(brca)$subtype_ER.Status,
+                 age = colData(brca)$age_at_diagnosis)
+
+df_age <- df_96058 %>%
+  select(ESRRB, PAM50.nearest, AgeAtDiagnosis)
+
+ESRRB_age <-  mutate(df_age, ESRRB_exp = cut(df_age$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+ESRRB_age <- ESRRB_age[!is.na(ESRRB_age$ESRRB_exp),]
+
+#ANOVA
+res.aov2.age <- aov(ESRRB_age$ESRRB ~ ESRRB_age$AgeAtDiagnosis, data = ESRRB_age)
+summary(res.aov2.age)
+
+require("dplyr")
+group_by(ESRRB_age, AgeAtDiagnosis) %>%
+  summarise(
+    count = n(),
+    mean = mean(ESRRB_age$ESRRB, na.rm = TRUE),
+    sd = sd(ESRRB_age$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2.age, type="means", se = FALSE)
+
+TukeyHSD(res.aov2.age)
+
+
+ageByPam50 <- ggplot(ESRRB_age, aes(x = PAM50.nearest, y = AgeAtDiagnosis, color = PAM50.nearest)) + geom_boxplot(width = 1)
+
+ageByPam50_ESRRB <- ggplot(data = ESRRB_age, aes(x = reorder(PAM50.nearest, ESRRB_age$AgeAtDiagnosis), y = ESRRB_age$AgeAtDiagnosis)) +
+  geom_bar(stat = "identity", position = "dodge", aes(fill = ESRRB_age$ESRRB_exp)) +
+  labs(y = "Age at diagnosis", x = "Pam50 subtype", fill = "ESRRB expression", main = "Age at diagnosis by subtype", sub = "By ESRRB expression") 
+
+```
+
+```{r venn diagram TCGA, BLBC ocverlap}
+
+row.names(assay(brca)) %>% {grep(pattern = 'ESRRB', x = .)}
+df_v = data.frame(Pam50 = colData(brca)$subtype_PAM50.mRNA,
+                 HER2 = colData(brca)$subtype_HER2.Final.Status,
+                 PR = colData(brca)$subtype_PR.Status,
+                 ER = colData(brca)$subtype_ER.Status)
+df = filter(df_v, PR %in% c('Positive', 'Negative') & ER %in% c('Positive', 'Negative') & HER2 %in% c('Positive', 'Negative'))
+
+df$Pheno = ifelse(df$ER  == 'Positive' & df$HER2 == 'Negative', 'ER+',
+                  ifelse(df$HER2 == 'Positive' & df$ER  == 'Negative', 'HER2+',
+                         ifelse(df$HER2 == 'Negative' & df$ER == 'Negative' & df$PR == 'Negative', 'TNBC', NA)))
+df_venn<- df %>%
+  select(Pheno, Pam50)
+```

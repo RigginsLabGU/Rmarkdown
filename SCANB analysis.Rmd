@@ -1,0 +1,626 @@
+---
+title: "SCAN-B_for paper"
+author: "Aileen"
+date: "8/1/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r install and load packages}
+library(ggplot2)
+library(magrittr)
+library(dplyr)
+library(tidyr)
+library(SummarizedExperiment)
+library(Biobase)
+library(limma)
+library(stringr)
+library(ggrepel)
+library(edgeR)
+library(ggpubr)
+```
+
+```{r setwd and prepare data}
+seqdata_96058 <- read.csv("GSE96058_gene_expression_3273_samples_and_136_replicates_transformed.csv")
+
+# Remove first  columns from seqdata
+countdata_96058 <- seqdata_96058[,-(1)]
+
+# Store EntrezGeneID as rownames
+rownames(countdata_96058) <- seqdata_96058[,1]
+colnames(countdata_96058) <- substr(colnames(countdata_96058), 1, 7)
+countdata_96058_t <- t(countdata_96058)
+
+#Load clinical data 
+clin_96058 <- read.csv("GSE96058_clinical_3273.csv")
+row.names(clin_96058)<- clin_96058$ clin_96058$Sample.Name
+clin_96058 <- clin_96058 [,-1]
+
+#make master table with clinical data and gene expression 
+df_96058 <- cbind(countdata_96058_t, clin_96058)
+```
+
+```{r, esrrb and blbc}
+#Plot by ESRRB by PAM50 subtype
+esrrb_blbc <- ggplot(df_96058, aes(x = ESRRB, y = PAM50.nearest, color = PAM50.nearest)) + geom_boxplot(width = 1)
+
+#shapiro-wilk normality- is the data normally distributed?
+shapiro.test(rnorm(esrrb_blbc))
+# W=0.92423, p=0.4284 
+
+#ANOVA AND TUKEY'S
+my_data2 <- df_96058 %>% 
+  select(ESRRB, PAM50.nearest)
+
+res.aov2.b <- aov(my_data2$ESRRB ~ my_data2$PAM50.nearest, data = my_data2)
+summary(res.aov2.b)
+
+require("dplyr")
+group_by(my_data2, PAM50.nearest) %>%
+  summarise(
+    count = n(),
+    mean = mean(my_data2$ESRRB, na.rm = TRUE),
+    sd = sd(my_data2$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2.b, type="means", se = FALSE)
+TukeyHSD(res.aov2.b)
+  
+```
+
+```{r, esrrb and TNBC}
+df_tnbc <- filter(df_96058, ER.Status %in% c('0', '1') & PgR.Status %in% c('0', '1') & HER2.Status %in% c('0', '1'))
+
+df_tnbc$Pheno = ifelse(df_tnbc$ER.Status  == '1' & df_tnbc$HER2.Status == '0', 'ER+',
+                  ifelse(df_tnbc$HER2.Status == '1' & df_tnbc$ER.Status  == '0', 'HER2+',
+                         ifelse(df_tnbc$HER2.Status == '0' & df_tnbc$ER.Status == '0' & df_tnbc$PgR.Status == '0', 'TNBC', NA)))
+   
+#Plot by ESRRB by PAM50 subtype
+esrrb_tnbc <- ggplot(df_tnbc, aes(x = df_tnbc$ESRRB, y = Pheno, color = Pheno), na.rm = TRUE) + 
+  geom_violin()+
+  geom_boxplot(width=1000)+
+  ylab('IHC subtype')+
+xlab('FPKM')+
+theme(legend.position="none")+
+labs(title=('ESRRB mRNA'), subtitle=('GSE96058 by IHC subtype'))+
+theme(plot.title = element_text(hjust = 0.5))+
+theme(plot.subtitle = element_text(hjust = 0.5))
+esrrb_tnbc 
+
+#shapiro-wilk normality- is the data normally distributed?
+shapiro.test(rnorm(esrrb_tnbc))
+# W=0.92423, p=0.4284 
+
+#ANOVA and TUKEY'S
+my_data <- df_tnbc %>%
+  select(ESRRB, Pheno)
+
+res.aov2 <- aov(my_data$ESRRB ~ my_data$Pheno, data = my_data)
+summary(res.aov2)
+
+require("dplyr")
+group_by(my_data, Pheno) %>%
+  summarise(
+    count = n(),
+    mean = mean(my_data$ESRRB, na.rm = TRUE),
+    sd = sd(my_data$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2, type="means", se = FALSE)
+TukeyHSD(res.aov2)
+```
+
+```{r, DEGs in all breast cancer}
+#Cut based on ESRRB expression
+ESRRB_1 <- cut(df_96058$ESRRB, quantile(df_96058$ESRRB,  (0:3)/3), include.lowest = TRUE)
+
+#Name the ESRRB tertiles you just established in last step
+design<-model.matrix(~0+ESRRB_1)
+colnames(design)<-c('Low', 'Medium', 'High')
+
+#DEG List and graph
+lm <-lmFit(countdata_96058 %>% log2, design = design)
+contr<-makeContrasts(High-Low, levels = design)
+lm<-contrasts.fit(lm, contr)
+tab_all<-eBayes(lm) %>% topTable(number = Inf, sort.by = 'none')
+tab_all<-tab_all[-grep('ESRRB', row.names(tab_all)),]
+tab_all$Gene<-row.names(tab_all) %>% {str_match(., pattern = "(^[:alnum:]+)|")[,2]}
+tab_all$threshold <- "1"
+a <- subset(tab_all, P.Value < 0.01 & logFC > 4)
+tab_all[rownames(a), "threshold"] <- "2"
+b <- subset(tab_all, P.Value < 0.01 & logFC < -4)
+tab_all[rownames(b), "threshold"] <- "3"
+table(tab_all$threshold)
+
+allBC_DEG <-ggplot(tab_all, aes(x = logFC, y = -log10(P.Value)))+
+  geom_point()+
+   scale_color_manual(values = c("black", "darkorchid4", "violetred"), 
+                     labels = c("", "Upregulated", "Downregulated"), 
+                     name = "DEGs")+
+  theme_bw()+
+  labs(x= 'logFC, ESRRB Hi/Low', y= '-log10(P.Value)')+
+  ggtitle( 'SCANB_96058 Differentially expressed genes in all BC', subtitle = 'ESRRB Gene Expression, Hi/Low')+
+  geom_label_repel(data = filter(tab_all, -log10(P.Value)>20), aes(label = Gene), nudge_y = 2, nudge_x = 2)
+
+```
+
+```{r, DEGs in BLBC}
+#filter df_96058, only Basal
+df_96058_filterB <- filter(df_96058, PAM50.nearest %in% c('Basal'))
+
+#remove the pam50.nearest, LymphNodeGroup, LymphNodeStatus, NHG columns
+ df_96058_filterB$PAM50.nearest <- NULL 
+   df_96058_filterB$LymphNodeGroup <- NULL 
+   df_96058_filterB$LymphNodeStatus <- NULL 
+   df_96058_filterB$NHG <- NULL
+
+#Cut based on ESRRB expression
+ESRRB_p2 <- cut(df_96058_filterB$ESRRB, quantile(df_96058_filterB$ESRRB,  (0:3)/3), include.lowest = TRUE)
+
+#Name the ESRRB tertiles you just established in last step
+designB<-model.matrix(~0+ESRRB_p2)
+colnames(designB)<-c('Low', 'Medium', 'High')
+
+#transpose df_96058_filter
+df_f_t <- t(df_96058_filterB)
+
+lm <-lmFit(df_f_t%>% log2, design = designB)
+contr<-makeContrasts(High-Low, levels = designB)
+lm<-contrasts.fit(lm, contr)
+tab<-eBayes(lm) %>% topTable(number = Inf, sort.by = 'none')
+tab<-tab[-grep('ESRRB', row.names(tab)),]
+tab$Gene<-row.names(tab) %>% {str_match(., pattern = "(^[:alnum:]+)|")[,2]}
+tab$threshold <- "1"
+a <- subset(tab, P.Value < 0.01 & logFC > 4)
+tab[rownames(a), "threshold"] <- "2"
+b <- subset(tab, P.Value < 0.01 & logFC < -4)
+tab[rownames(b), "threshold"] <- "3"
+table(tab$threshold)
+
+BLBC_DEG <-ggplot(tab, aes(x = logFC, y = -log10(P.Value), colour = threshold))+
+  geom_point()+
+  scale_color_manual(values = c("black", "darkorchid4", "violetred"), 
+                     labels = c("", "Upregulated", "Downregulated"), 
+                     name = "DEGs", )+ 
+    theme_bw()+
+    geom_hline(yintercept =2, size = 0.5, colour = "#FF3721",
+               linetype = "dashed")+
+  geom_vline(xintercept = c(-4,4), colour = "#0000FF",
+               linetype = "dashed")+
+  labs(x= 'logFC, ESRRB Hi/Low', y= '-log10(P.Value)')+
+  ggtitle( 'SCANB_96058, Differentially expressed genes in BLBC', subtitle = 'ESRRB Gene Expression, Hi/Low')+
+  geom_label_repel(data = filter(tab, -log10(P.Value)>2, abs(logFC) > 4), aes(label = Gene), nudge_y = 0.5, nudge_x = 1, remove.duplicates = TRUE,  box.padding = 0.3, show.legend = TRUE)
+```
+
+```{r, DEGs in TNBC}
+#filter df_96058, only tnbc
+df_T <- filter(df_96058, ER.Status %in% c('0', '1') & PgR.Status %in% c('0', '1') & HER2.Status %in% c('0', '1'))
+
+df_T$Pheno_T = ifelse(df_T$ER.Status  == '1' & df_T$HER2.Status == '0', 'ER+',
+                  ifelse(df_T$HER2.Status == '1' & df_T$ER.Status  == '0', 'HER2+',
+                         ifelse(df_T$HER2.Status == '0' & df_T$ER.Status == '0' & df_T$PgR.Status == '0', 'TNBC', NA)))
+df_T <- df_T %>% filter(Pheno_T == "TNBC")
+
+write.table(df_T, file = '96058_TNBCpatients.txt', sep = '\t', row.names = FALSE)
+
+#remove the pam50.nearest, LymphNodeGroup, LymphNodeStatus, NHG columns
+ df_T$PAM50.nearest <- NULL 
+   df_T$LymphNodeGroup <- NULL 
+   df_T$LymphNodeStatus <- NULL 
+   df_T$NHG <- NULL
+   df_T$Pheno_T <- NULL
+
+#Cut based on ESRRB expression
+ESRRB_Tcut<- cut(df_T$ESRRB, quantile(df_T$ESRRB,  (0:3)/3), include.lowest = TRUE)
+
+#Name the ESRRB tertiles you just established in last step
+designT<-model.matrix(~0+ESRRB_Tcut)
+colnames(designT)<-c('Low', 'Medium', 'High')
+
+#transpose df_96058_filter
+df_T_t <- t(df_T)
+
+lm <-lmFit(df_T_t %>% log2, design = designT)
+contr<-makeContrasts(High-Low, levels = designT)
+lm<-contrasts.fit(lm, contr)
+tab<-eBayes(lm) %>% topTable(number = Inf, sort.by = 'none')
+tab<-tab[-grep('ESRRB', row.names(tab)),]
+tab$Gene<-row.names(tab) %>% {str_match(., pattern = "(^[:alnum:]+)|")[,2]}
+tab$threshold <- "1"
+a <- subset(tab, P.Value < 0.01 & logFC > 4)
+tab[rownames(a), "threshold"] <- "2"
+b <- subset(tab, P.Value < 0.01 & logFC < -4)
+tab[rownames(b), "threshold"] <- "3"
+table(tab$threshold)
+
+TNBC_DEG <-ggplot(tab, aes(x = logFC, y = -log10(P.Value), colour = threshold))+
+  geom_point()+
+  scale_color_manual(values = c("black", "darkorchid4", "violetred"), 
+                     labels = c("", "Upregulated", "Downregulated"), 
+                     name = "DEGs", )+ 
+  theme_bw()+
+    geom_hline(yintercept =2, size = 0.5, colour = "#FF3721",
+               linetype = "dashed")+
+  geom_vline(xintercept = c(-4,4), colour = "#0000FF",
+               linetype = "dashed")+
+  labs(x= 'logFC, ESRRB Hi/Low', y= '-log10(P.Value)')+
+  ggtitle( 'SCANB_96058, Differentially expressed genes in TNBC', subtitle = 'ESRRB Gene Expression, Hi/Low')+
+  geom_label_repel(data = filter(tab, -log10(P.Value)>2, abs(logFC) > 4), aes(label = Gene), nudge_y = 0.5, nudge_x = 1, remove.duplicates = TRUE,  box.padding = 0.3, show.legend = TRUE)
+```
+
+```{r, survival plot}
+library(ggfortify)
+library(survival)
+library(survminer)
+
+#LOAD DATA WITH SELECT COLUMNS
+df_km1 <- df_96058 %>%
+  select(ESRRB, Overall_Survival_days, Overall_Survival_event)
+
+###ONLY HI AND LOW ESRRB_ all BC
+design_km5 <-  mutate(df_km1, ESRRB_exp = cut(df_km1$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+design_km5.2 <- design_km5[!is.na(design_km5$ESRRB_exp),]
+                       
+#compile data to be read by survfit
+surv_object5 <- Surv(time = design_km5.2$Overall_Survival_days, event = design_km5.2$Overall_Survival_event)
+
+#fit the KM curves
+fit5 <- survfit(surv_object5 ~ design_km5.2$ESRRB_exp, data = design_km5.2 )
+
+fit5_plot <- ggsurvplot(fit5, data = design_km5.2, risk.table= TRUE, risk.table.y.text = FALSE, xlab = "Time (days)", legend.title = "ESRRB expression", legend.labs = c("High", "Low"), legend = ("bottom"), pval = TRUE,
+   submain = "All Breast Cancer, OS ",
+   caption = "Data from SCANB, GSE96058",
+   
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+
+### in BASAL 
+#filter df_96058, only Basal
+df_96058_filterB <- filter(df_96058, PAM50.nearest %in% c('Basal'))
+
+#make table with only columns needed
+df_km6 <- df_96058_filterB %>%
+  select(ESRRB, Overall_Survival_days, Overall_Survival_event)
+
+design_km6 <-  mutate(df_km6, ESRRB_exp = cut(df_km6$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+design_km6 <- design_km6[!is.na(design_km6$ESRRB_exp),]
+                       
+#compile data to be read by survfit
+surv_object6 <- Surv(time = design_km6$Overall_Survival_days, event = design_km6$Overall_Survival_event)
+
+#fit the KM curves
+fit6 <- survfit(surv_object6 ~ design_km6$ESRRB_exp, data = design_km6 )
+
+fit6_plot <- ggsurvplot(fit6, data = design_km6, risk.table= TRUE, risk.table.y.text = FALSE, xlab = "Time (days)", legend.title = "ESRRB expression", legend.labs = c("High", "Low"), legend = ("bottom"), pval = TRUE,
+   submain = "Basal Like Breast Cancer, OS ",
+   caption = "Data from SCANB, GSE96058",
+   
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+
+#In TNBC only 
+df_Tsurv <- filter(df_96058, ER.Status %in% c('0', '1') & PgR.Status %in% c('0', '1') & HER2.Status %in% c('0', '1'))
+
+df_Tsurv$Pheno_TNBC = ifelse(df_Tsurv$ER.Status  == '1' & df_Tsurv$HER2.Status == '0', 'ER+',
+                  ifelse(df_Tsurv$HER2.Status == '1' & df_Tsurv$ER.Status  == '0', 'HER2+',
+                         ifelse(df_Tsurv$HER2.Status == '0' & df_Tsurv$ER.Status == '0' & df_Tsurv$PgR.Status == '0', 'TNBC', NA)))
+df_Tsurv <- df_Tsurv %>% filter(Pheno_T == "TNBC")
+
+#make table with only columns needed
+df_km1.0 <- df_Tsurv %>%
+  select(ESRRB, Overall_Survival_days, Overall_Survival_event)
+
+design_km1.0 <-  mutate(df_km1.0, ESRRB_exp = cut(df_km1.0$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+design_km1.0 <- design_km1.0[!is.na(design_km1.0$ESRRB_exp),]
+                       
+#compile data to be read by survfit
+surv_object1.0 <- Surv(time = design_km1.0$Overall_Survival_days, event = design_km1.0$Overall_Survival_event)
+
+#fit the KM curves
+fit1.0 <- survfit(surv_object1.0 ~ design_km1.0$ESRRB_exp, data = design_km1.0 )
+
+fit1.0_plot <- ggsurvplot(fit1.0, data = design_km1.0, risk.table= TRUE, risk.table.y.text = FALSE, xlab = "Time (days)", legend.title = "ESRRB expression", legend.labs = c("High", "Low"), legend = ("bottom"), pval = TRUE,
+   submain = "Triple Negative Breast Cancer, OS ",
+   caption = "Data from SCANB, GSE96058",
+   ggtheme = theme_survminer(
+     font.submain = c(15, "black"),
+     font.caption = c(8, "plain", "light blue"),
+     font.x = c(14, "black"),
+     font.y = c(14, "black"),
+     font.tickslab = c(10, "black")))
+```
+
+```{r, lymphnode}
+#all BC
+df_LN1 <- df_96058 %>%
+  select(ESRRB, LymphNodeStatus)
+
+ESRRB_LN <-  mutate(df_LN1, ESRRB_exp = cut(df_LN1$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+counts <- ddply(ESRRB_LN, .(ESRRB_LN$ESRRB_exp, ESRRB_LN$LymphNodeStatus), nrow)
+names(counts) <- c("ESRRB_exp", "LymphNodeStatus", "Freq")
+
+#BLBC
+df_LN2 <- df_96058_filterB %>%
+  select(ESRRB, LymphNodeStatus)
+ESRRB_LN2 <-  mutate(df_LN2, ESRRB_exp = cut(df_LN2$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+counts2 <- ddply(ESRRB_LN2, .(ESRRB_LN2$ESRRB_exp, ESRRB_LN2$LymphNodeStatus), nrow)
+names(counts2) <- c("ESRRB_exp", "LymphNodeStatus", "Freq")
+ counts2
+
+```
+
+```{r, MAKE A CHEMO AND END TREAT ONE }
+#all BC
+df_chemo <- df_96058 %>%
+  select(ESRRB, Chemo.treated)
+
+ESRRB_chemo <-  mutate(df_chemo, ESRRB_exp = cut(df_chemo$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+counts <- ddply(ESRRB_chemo, .(ESRRB_chemo$ESRRB_exp, EESRRB_chemo$LymphNodeStatus), nrow)
+names(counts) <- c("ESRRB_exp", "LymphNodeStatus", "Freq")
+
+#BLBC
+df_LN2 <- df_96058_filterB %>%
+  select(ESRRB, LymphNodeStatus)
+ESRRB_LN2 <-  mutate(df_LN2, ESRRB_exp = cut(df_LN2$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+
+counts2 <- ddply(ESRRB_LN2, .(ESRRB_LN2$ESRRB_exp, ESRRB_LN2$LymphNodeStatus), nrow)
+names(counts2) <- c("ESRRB_exp", "LymphNodeStatus", "Freq")
+ counts2
+
+```
+
+```{r, age}
+#all BC, by esrrb hi and low 
+df_age <- df_96058 %>%
+  select(ESRRB, PAM50.nearest, AgeAtDiagnosis)
+
+ESRRB_age <-  mutate(df_age, ESRRB_exp = cut(df_age$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+ESRRB_age <- ESRRB_age[!is.na(ESRRB_age$ESRRB_exp),]
+
+#ANOVA and Tukey for all bc 
+res.aov2.age <- aov(ESRRB_age$ESRRB ~ ESRRB_age$AgeAtDiagnosis, data = ESRRB_age)
+summary(res.aov2.age)
+
+require("dplyr")
+group_by(ESRRB_age, AgeAtDiagnosis) %>%
+  summarise(
+    count = n(),
+    mean = mean(ESRRB_age$ESRRB, na.rm = TRUE),
+    sd = sd(ESRRB_age$ESRRB, na.rm = TRUE)
+  )
+
+model.tables(res.aov2.age, type="means", se = FALSE)
+
+TukeyHSD(res.aov2.age)
+
+#by Pam50
+ageByPam50 <- ggplot(ESRRB_age, aes(x = PAM50.nearest, y = AgeAtDiagnosis, color = PAM50.nearest)) + geom_boxplot(width = 1)
+
+ageByPam50_ESRRB <- ggplot(data = ESRRB_age, aes(x = reorder(PAM50.nearest, ESRRB_age$AgeAtDiagnosis), y = ESRRB_age$AgeAtDiagnosis)) +
+  geom_bar(stat = "identity", position = "dodge", aes(fill = ESRRB_age$ESRRB_exp)) +
+  labs(y = "Age at diagnosis", x = "Pam50 subtype", fill = "ESRRB expression", main = "Age at diagnosis by subtype", sub = "By ESRRB expression")
+
+#ANOVA and Tukey by Pam50
+res.aov2.ageBLBC <- aov(df$AgeAtDiagnosis ~ df$PAM50.nearest, data = df_age)
+summary(res.aov2.ageBLBC)
+TukeyHSD(res.aov2.ageBLBC)
+
+#age by IHC
+df2_age <- df_96058 %>%
+  select(AgeAtDiagnosis, ER.Status, PgR.Status, HER2.Status)
+
+df = filter(df2_age, PgR.Status %in% c('1', '0') & ER.Status %in% c('1', '0') & HER2.Status %in% c('1', '0'))
+
+df$Pheno = ifelse(df$ER.Status == '1' & df$HER2.Status == '0', 'ER+',
+                  ifelse(df$HER2.Status == '1' & df$ER.Status == '0', 'HER2+',
+                         ifelse(df$HER2.Status == '0' & df$ER.Status == '0' & df$PgR.Status== '0', 'TNBC', NA)))
+
+#ANOVA and Tukey by IHC
+res.aov2.age <- aov(df$AgeAtDiagnosis ~ df$Pheno, data = df)
+summary(res.aov2.age)
+TukeyHSD(res.aov2.age)
+
+#LOAD DATA WITH SELECT COLUMNS FOR  esrrb and age_continuous
+ESRRB_AGE <- df_96058 %>%
+  select(ESRRB, AgeAtDiagnosis)
+
+# Scatter plot with regression linE
+# Add confidence interval
+# Add correlation coefficient: stat_cor()
+ESRRBvage_correlation<- ggscatter(ESRRB_AGE, x = "AgeAtDiagnosis", y = "ESRRB",
+          add = "reg.line", conf.int = TRUE, 
+          add.params = list(fill = "lightgray"),
+          ggtheme = theme_minimal()
+          )+
+  geom_point(aes(color = ESRRB), size = 2.5) +
+  scale_color_gradientn(colors = c("#00AFBB", "#E7B800", "#FC4E07"))+
+  stat_smooth( aes(color = ESRRB, fill = ESRRB), method = "lm") +
+  stat_cor(aes(color = ESRRB), label.y = 2.3)
+```
+```
+
+```{r, esrrb v er+}
+#LOAD DATA WITH SELECT COLUMNS
+ESRRBvER <- df_96058 %>%
+  select(ESRRB, ESR1)
+
+b <- ggplot(ESRRBvER, aes(x = ESR1, y = ESRRB))
+
+# Scatter plot
+# Add regression line and confidence interval
+# Add correlation coefficient: stat_cor()
+ESRRBvER_correlation<- ggscatter(ESRRBvER, x = "ESRRB", y = "ESR1",
+          add = "reg.line", conf.int = TRUE, 
+          add.params = list(fill = "lightgray"),
+          ggtheme = theme_minimal()
+          )+
+  geom_point(aes(color = ESRRB), size = 2.5) +
+  scale_color_gradientn(colors = c("#00AFBB", "#E7B800", "#FC4E07"))+
+  stat_smooth( aes(color = ESRRB, fill = ESRRB), method = "lm") +
+  stat_cor(aes(color = ESRRB), label.y = 10)
+```
+
+
+```{r, cox regression AGE, LN STATUS, NHG, ENDOCRINE TREATMENT, CHEMOTHERAPY}
+#All BC
+res.coxAge <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ AgeAtDiagnosis, data = df_96058)
+res.coxAge
+
+res.cox <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ LymphNodeStatus, data = df_96058)
+res.cox
+
+res.cox_NHG <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ NHG, data = df_96058)
+res.cox_NHG
+
+res.cox_EndocT <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ Endocrine.treated, data = df_96058)
+res.cox_EndocT
+
+res.cox_ChemoT <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ Chemo.treated, data = df_96058)
+res.cox_ChemoT
+
+#BLBC
+#filter df_96058, only Basal
+covariates <- c("AgeAtDiagnosis", "LymphNodeStatus",  "NHG", "Endocrine.treated", "Chemo.treated")
+univ_formulas <- sapply(covariates,
+                        function(x) as.formula(paste('Surv(Overall_Survival_days, Overall_Survival_event)~', x)))
+                        
+univ_models <- lapply( univ_formulas, function(x){coxph(x, data = df_96058_filterB)})
+
+# Extract data 
+univ_results <- lapply(univ_models,
+                       function(x){ 
+                          x <- summary(x)
+                          p.value<-signif(x$wald["pvalue"], digits=2)
+                          wald.test<-signif(x$wald["test"], digits=2)
+                          beta<-signif(x$coef[1], digits=2);#coeficient beta
+                          HR <-signif(x$coef[2], digits=2);#exp(beta)
+                          HR.confint.lower <- signif(x$conf.int[,"lower .95"], 2)
+                          HR.confint.upper <- signif(x$conf.int[,"upper .95"],2)
+                          HR <- paste0(HR, " (", 
+                                       HR.confint.lower, "-", HR.confint.upper, ")")
+                          res<-c(beta, HR, wald.test, p.value)
+                          names(res)<-c("beta", "HR (95% CI for HR)", "wald.test", 
+                                        "p.value")
+                          return(res)
+                          #return(exp(cbind(coef(x),confint(x))))
+                         })
+
+#TNBC, LN status, pull out only TNBC patients 
+df_Tsurv <- filter(df_96058, ER.Status %in% c('0', '1') & PgR.Status %in% c('0', '1') & HER2.Status %in% c('0', '1'))
+
+df_Tsurv$Pheno_TNBC = ifelse(df_Tsurv$ER.Status  == '1' & df_Tsurv$HER2.Status == '0', 'ER+',
+                  ifelse(df_Tsurv$HER2.Status == '1' & df_Tsurv$ER.Status  == '0', 'HER2+',
+                         ifelse(df_Tsurv$HER2.Status == '0' & df_Tsurv$ER.Status == '0' & df_Tsurv$PgR.Status == '0', 'TNBC', NA)))
+df_Tsurv <- df_Tsurv %>% filter(Pheno_TNBC == "TNBC")
+
+res.coxageT <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ LymphNodeStatus, data = df_Tsurv)
+res.coxageT
+
+res.coxT <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ LymphNodeStatus, data = df_Tsurv)
+res.coxT
+
+res.cox_NHG_t <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ NHG, data = df_Tsurv)
+res.cox_NHG_t
+
+res.cox_EndocT_t <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ Endocrine.treated, data = df_Tsurv)
+res.cox_EndocT_t
+
+res.cox_ChemoT_t <- coxph(Surv(Overall_Survival_days, Overall_Survival_event) ~ Chemo.treated, data = df_Tsurv)
+res.cox_ChemoT_t
+
+##MULTIVARIATE ANALYSES - ESRRB HI V LO
+ESRRB_HiLo <-  mutate(df_96058, ESRRB_exp = cut(df_96058$ESRRB, breaks=c(-2.52, -2.93 , -Inf), labels=c("high", "low")))
+ESRRB_HiLo <- ESRRB_HiLo[!is.na(ESRRB_HiLo$ESRRB_exp),]
+res.coxAge <- coxph(ESRRB_HiLo$ESRRB_exp ~ AgeAtDiagnosis, data = df_96058)
+```
+
+```{r, patient overlap venn diagram}
+library(VennDiagram)
+#SCANB overlap
+venn.plot <- venn.diagram(x = list(
+  "TNBC" = 1:91,
+  "BLBC" = 17:138  
+    ),
+	filename = 'Venn_TCGA_labels switched.tiff',
+	resolution = 300,
+  inverted = TRUE,
+	fill = c('darkseagreen1',  'darkslategray1'),
+	fontface = "bold",
+	cex = 2.5,
+	cat.cex = 2.5,
+	main = 'BLBC and TNBC patient overlap',
+	main.cex = 3,
+	font.main= 6,
+	sub = "TCGA",
+	sub.cex = 2
+	)
+```
+
+```{r, promoter analysis_BLBC and TNBC}
+
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install()
+BiocManager::install(c("GenomicFeatures", "AnnotationDbi","TxDb.Hsapiens.UCSC.hg19.knownGene","BSgenome.Hsapiens.UCSC.hg19"))
+library(tibble)
+library(dplyr)
+library(stringr)
+library(forcats)
+library(edgeR)
+library(wesanderson)
+library(reshape2)
+library(ggplot2)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(ggrepel)
+library(seqRFLP)
+library(AnnotationDbi)
+library(BSgenome)
+library(BSgenome.Hsapiens.UCSC.hg19)
+library(GenomicFeatures)
+library(seqRFLP)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(readr)
+
+# SCANB_blbc
+scanb_blbc_genes$Gene <- as.character(scanb_blbc_genes$Gene)
+## OR scanb_tnbc_genes$Gene <- as.character(scanb_tnbc_genes$Gene)
+
+#ADD ENTREZ ID FOR PROMOTER ANALYSIS
+Genes_entrez<-mapIds(org.Hs.eg.db, scanb_blbc_genes$Gene, 'ENTREZID', 'SYMBOL')
+
+#MAKE GRANGESLIST TO BE USED BY getPromoterSeq FUNCTION - genes pulled only exist within annotated genome (saves a headache later)
+GRangesList <-transcriptsBy (TxDb.Hsapiens.UCSC.hg19.knownGene, by = "gene")[names(transcriptsBy (TxDb.Hsapiens.UCSC.hg19.knownGene, by = "gene")) %in% Genes_entrez]
+
+#GET PROMOTER SEQUENCES (-4000 to +500)
+SCANB_blbc_promoter.seqs <- getPromoterSeq (GRangesList,  Hsapiens, upstream=4000, downstream=500)
+
+#COERCE TO DATA FRAME AND EXPORT
+SCANB_blbc_promoter<-as.data.frame(SCANB_blbc_promoter.seqs)
+write_tsv(SCANB_blbc_promoter,"./SCANB_blbc_promoter")
+
+##AT THIS STEP, MANUALLY DEDUPLICATE BECAUSE ALL ISOFORMS WILL BE BROUGHT DOWN
+
+#COERCE TO DATA FRAME
+scanb_blbc_prom_dedup_df<-as.data.frame(scanb_blbc_prom_DeDup2)
+
+#CONVERT TO FASTA FOR MEME
+scanb_blbc_promR.fasta = dataframe2fas(scanb_blbc_prom_dedup_df, file="SCANB_blbc_promoteR.fasta")
+```
